@@ -1,19 +1,24 @@
+#Two-Fluid Hydrodynamics Project
+# This script studies a simple 1D two-fluid Euler model.
+# The main final method is a TVD Rusanov solver with an
+# New ADI method in multi-fluids.
 
 
-#The project
 
+#Imports and global settings
 import torch as torch 
 import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
+import time 
 from pathlib import Path
 
+
+# Use GPU if it is available. Otherwise use CPU.
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-
 
 # Folder for saving figures
 fig_dir = Path(__file__).resolve().parent / "AST5110_TVD_figures"
@@ -25,13 +30,9 @@ def save_figure(fig, filename):
     fig.savefig(path, dpi=300, bbox_inches="tight")
     print(f"Saved figure: {path}")
 
-#We asume that, in this problem we have $U =(\rho,m,e)$ $e$ is the energy.
-#So define the function first.
-
+#We asume that, in this problem we have $U =(\rho,m,e)$ $e$ is the energy. So define the function first.
 #Single fluid Euler.
-
 #U_t +F(U)_x = 0
-
 # For the internal-energy formulation used here:
 # F(U) = (rho*u, m*u + p, e*u)
 
@@ -52,19 +53,21 @@ eps = 1e-12 # Do not want have 0 division or blows up.
 
 #This means we imput the primitive variables rhom u , p we can get out put state vector U=(rho,rhou,e)
 
-#Define the function 
+#Define the function switch the primitive variables to state vector。
+
 def prim_to_state(rho, u, p, gamma=gamma):
     m = rho * u
     e = p / (gamma - 1.0)
     U = torch.stack([rho, m, e], dim=0)
     return U
 
-
 #Since we know that m= rho * u, thus we have u = m/prho
 #The total energy is E = p/(gamma-1) + 1/2 *rho *u^2
 #And  p = (gamma-1)(E-1/2 rho *u^2)
 #From conservative variables to primitive variables
 #In this part we get the U=(rho,rhou,e) to (rho,rhou,e)
+
+#Define the function switch the state vector to primitive。
 def cons_to_prim(U, gamma=gamma):
     rho = torch.clamp(U[0], min=eps) #Will no have negative or zero density 
     m   = U[1]
@@ -89,26 +92,26 @@ print("u2 =", u2)
 print("p2 =", p2)
 
 #Conclusion
-#rho2 closed rho, u2 closed u, and p2 closed to p, this is oken 
-
+#rho2 closed rho, u2 closed u, and p2 closed to p, this is ok.
+#
 def make_two_fluid_state(rho_i, u_i, p_i, rho_n, u_n, p_n, gamma=gamma):
     U_i = prim_to_state(rho_i, u_i, p_i, gamma=gamma)
     U_n = prim_to_state(rho_n, u_n, p_n, gamma=gamma)
 
     U = torch.cat([U_i, U_n], dim=0)
     return U
+#
+
 def split_two_fluid_state(U):
     U_i = U[0:3]
     U_n = U[3:6]
     return U_i, U_n
 
-
+#
 def state_to_prim_two_fluid(U, gamma=gamma):
     U_i, U_n = split_two_fluid_state(U)
-
     rho_i, u_i, p_i = cons_to_prim(U_i, gamma=gamma)
     rho_n, u_n, p_n = cons_to_prim(U_n, gamma=gamma)
-
     return rho_i, u_i, p_i, rho_n, u_n, p_n
 
 
@@ -129,6 +132,8 @@ def state_to_prim_two_fluid(U, gamma=gamma):
 #F_rho =m_a
 #F_m = m_au_a +p_a
 #F_e = e_au_a
+
+
 
 #We consider a simplified version of the prim to state function.
 #And I will use this moreover.
@@ -591,10 +596,9 @@ plt.close(fig)
 
 #single-fluid Sod exact solution
 
-import math
-
+#Give some Starpressure p, and compute the Riemann problem, the left or right nonlnear function.
 def pressure_function(p, rho_k, u_k, p_k, gamma):
-    a_k = math.sqrt(gamma * p_k / rho_k)
+    a_k = math.sqrt(gamma * p_k / rho_k) # The speed of the sound.
     A_k = 2.0 / ((gamma + 1.0) * rho_k)
     B_k = (gamma - 1.0) / (gamma + 1.0) * p_k
 
