@@ -203,8 +203,7 @@ def rhs_one_fluid(U, dx, gamma=gamma):
 #S_b =  rho_bv__ba(u_a-u_b)
 
 
-
-
+#momentum exchange source
 def momentum_source_pair(U_i, U_n, nu_in, gamma=gamma):
     rho_i, u_i, p_i = stat_one_fluid(U_i, gamma=gamma)
     rho_n, u_n, p_n = stat_one_fluid(U_n, gamma=gamma)
@@ -216,7 +215,7 @@ def momentum_source_pair(U_i, U_n, nu_in, gamma=gamma):
     S_n = -S_i                  # exact opposite, total momentum conserved
 
     return S_i, S_n
-
+##The total RHS for two-fluid system
 def rhs_two_fluid(U_i, U_n, dx, nu_in, gamma=gamma):
     RHS_i = rhs_one_fluid(U_i, dx, gamma=gamma)
     RHS_n = rhs_one_fluid(U_n, dx, gamma=gamma)
@@ -230,7 +229,6 @@ def rhs_two_fluid(U_i, U_n, dx, nu_in, gamma=gamma):
 
 
 #Explicit Euler
-
 
 def euler_step_two_fluid(U_i, U_n, dx, dt, nu_in, gamma=gamma):
     RHS_i, RHS_n = rhs_two_fluid(U_i, U_n, dx, nu_in, gamma=gamma)
@@ -246,25 +244,44 @@ def euler_step_two_fluid(U_i, U_n, dx, dt, nu_in, gamma=gamma):
 
     return U_i_new, U_n_new
 
-def compute_dt_one_fluid(U, dx, gamma=gamma, cfl=0.2):
+def compute_dt_one_fluid(U, dx, gamma=gamma, cfl=0.2): #With CFl
     rho, u, p = stat_one_fluid(U, gamma=gamma)
     c = torch.sqrt(gamma * p / rho)
     max_speed = torch.max(torch.abs(u) + c)
     dt = cfl * dx / max_speed #CFL 
     return dt #The CFL will be different per fluid
 
-def compute_dt_two_fluid(U_i, U_n, dx, gamma=gamma, cfl=0.2):
+def compute_dt_two_fluid(U_i, U_n, dx, gamma=gamma, cfl=0.2): #two-fluid global time step
     dt_i = compute_dt_one_fluid(U_i, dx, gamma=gamma, cfl=cfl)
     dt_n = compute_dt_one_fluid(U_n, dx, gamma=gamma, cfl=cfl)
     return torch.minimum(dt_i, dt_n)
+# ============================================================
+# Two-fluid RHS and explicit Euler baseline
+# ============================================================
+# This is the first simple two-fluid time-stepping method.
+#
+# Each fluid has state
+#     U = (rho, m, e),
+# where m = rho*u and e = p/(gamma-1).
+#
+# The hydrodynamic part is computed by rhs_one_fluid.
+# Then I add the ion-neutral momentum exchange source.
+#
+# This baseline is useful for testing the collision source, but it is
+# not the final shock-capturing method. Later I use conservative
+# variables, Rusanov flux, TVD reconstruction, and ADI-like splitting.
+# ============================================================
 
-#drift relaxation test
-# grid
+
+
+
+#Drift relaxation test
+#Try to do simplest ion neutral drift relaxation test
 N = 200
 x = torch.linspace(-1.0, 1.0, N)
 dx = x[1] - x[0]
 
-# initial states
+#Initial data for ion and neutral
 rho_i = 0.2 * torch.ones_like(x)
 u_i   = 1.0 * torch.ones_like(x)
 p_i   = 0.1 * torch.ones_like(x)
@@ -273,53 +290,18 @@ rho_n = 0.8 * torch.ones_like(x)
 u_n   = 0.0 * torch.ones_like(x)
 p_n   = 0.1 * torch.ones_like(x)
 
+#Switch primitive variables to state variables
 U_i = torch.stack([rho_i, rho_i * u_i, p_i / (gamma - 1.0)], dim=0)
 U_n = torch.stack([rho_n, rho_n * u_n, p_n / (gamma - 1.0)], dim=0)
 
+
+#collision frequency
 nu_in = 1.0
 nu_ni = (rho_i[0] * nu_in / rho_n[0]).item()
 print("nu_ni =", nu_ni)
 
-t = 0.0
-t_end = 0.2
 
-while t < t_end:
-    dt = compute_dt_two_fluid(U_i, U_n, dx, gamma=gamma, cfl=0.2).item()
-    if t + dt > t_end:
-        dt = t_end - t
-    if dt <= 0:
-        print("dt <= 0")
-        break   
-    U_i, U_n = euler_step_two_fluid(U_i, U_n, dx, dt, nu_in, gamma=gamma)
-    t += dt
-
-rho_i, u_i, p_i = stat_one_fluid(U_i)
-rho_n, u_n, p_n = stat_one_fluid(U_n)
-
-print("mean u_i =", torch.mean(u_i).item())
-print("mean u_n =", torch.mean(u_n).item())
-print("mean drift =", torch.mean(torch.abs(u_i - u_n)).item())
-
-# drift relaxation test
-N = 200
-x = torch.linspace(-1.0, 1.0, N)
-dx = x[1] - x[0]
-
-rho_i = 0.2 * torch.ones_like(x)
-u_i   = 1.0 * torch.ones_like(x)
-p_i   = 0.1 * torch.ones_like(x)
-
-rho_n = 0.8 * torch.ones_like(x)
-u_n   = 0.0 * torch.ones_like(x)
-p_n   = 0.1 * torch.ones_like(x)
-
-U_i = torch.stack([rho_i, rho_i * u_i, p_i / (gamma - 1.0)], dim=0)
-U_n = torch.stack([rho_n, rho_n * u_n, p_n / (gamma - 1.0)], dim=0)
-
-nu_in = 1.0
-nu_ni = (rho_i[0] * nu_in / rho_n[0]).item()
-print("nu_ni =", nu_ni)
-
+#Time
 t = 0.0
 t_end = 0.2
 
@@ -329,14 +311,14 @@ ui_hist = []
 un_hist = []
 
 while t < t_end:
-    rho_i_now, u_i_now, p_i_now = stat_one_fluid(U_i)
-    rho_n_now, u_n_now, p_n_now = stat_one_fluid(U_n)
+    rho_i_now, u_i_now, p_i_now = stat_one_fluid(U_i)#
+    rho_n_now, u_n_now, p_n_now = stat_one_fluid(U_n)#
 
     t_hist.append(t)
     drift_hist.append(torch.mean(torch.abs(u_i_now - u_n_now)).item())
     ui_hist.append(torch.mean(u_i_now).item())
     un_hist.append(torch.mean(u_n_now).item())
-
+    #global time step
     dt = compute_dt_two_fluid(U_i, U_n, dx, gamma=gamma, cfl=0.2).item()
 
     if t + dt > t_end:
@@ -344,9 +326,9 @@ while t < t_end:
     if dt <= 0:
         print("dt <= 0")
         break
-
+        #One Explicit Euler
     U_i, U_n = euler_step_two_fluid(U_i, U_n, dx, dt, nu_in, gamma=gamma)
-    t += dt
+    t += dt #The Time
 
 rho_i, u_i, p_i = stat_one_fluid(U_i)
 rho_n, u_n, p_n = stat_one_fluid(U_n)
@@ -358,22 +340,45 @@ print("mean drift =", torch.mean(torch.abs(u_i - u_n)).item())
 
 
 # Two fluid shock tube
-
+# ============================================================
+# Two-fluid Sod shock tube initial condition
+# ============================================================
+# Here I build a two-fluid version of the Sod shock tube.
+#
+# First I define the total density and total pressure on the left
+# and right side. Then I split them into ion and neutral parts.
+#
+# The total left/right states are:
+#   left:  rho_tot = 0.125, p_tot = 0.125 / gamma
+#   right: rho_tot = 1.0,   p_tot = 1.0 / gamma
+#
+# ion_frac_L and ion_frac_R control how much of the total density
+# belongs to the ion fluid on the left and right side.
+#
+# press_frac_i controls how much of the total pressure belongs
+# to the ion fluid.
+#
+# I also allow a neutral velocity drift on the left side. This is used
+# to test how the ion-neutral collision source reduces velocity drift.
+# ============================================================
 #We assume the initial value left and right
 def initial_condition_two_fluid_sod(x, x0=0.0, gamma=gamma,
                                     ion_frac_L=0.5, ion_frac_R=0.5,
                                     press_frac_i=0.5,
                                     drift_n_L=0.2, drift_n_R=0.0):
-    left_mask = x < x0
-
+    left_mask = x < x0 ## Points with x < x0 are on the left side of the discontinuity.
+    # Total density of the shock tube.
+    # Left side has low density, right side has high density.
     rho_tot = torch.where(left_mask,
                           torch.full_like(x, 0.125),
                           torch.full_like(x, 1.0))
-
+    # Total pressure of the shock tube.
+    # This is a reversed Sod setup: pressure is larger on the right side.
     p_tot = torch.where(left_mask,
                         torch.full_like(x, 0.125 / gamma),
                         torch.full_like(x, 1.0 / gamma))
-
+    # Split the total density into ion and neutral density.
+    # ion_frac can be different on the left and right side.
     ion_frac = torch.where(left_mask,
                            torch.full_like(x, ion_frac_L),
                            torch.full_like(x, ion_frac_R))
@@ -385,13 +390,15 @@ def initial_condition_two_fluid_sod(x, x0=0.0, gamma=gamma,
     p_n = (1.0 - press_frac_i) * p_tot
 
     # ion velocity
-    u_i0 = torch.zeros_like(x)
+    u_i0 = torch.zeros_like(x) #    # Split total pressure into ion pressure and neutral pressure.
 
-    # neutral velocity: add drift on the left side
+    # Initial neutral velocity.
+    # A drift can be added on the left side.
     u_n0 = torch.where(left_mask,
                        torch.full_like(x, drift_n_L),
                        torch.full_like(x, drift_n_R))
-
+    # Convert primitive variables to state variables.
+    # Here U = (rho, m, e), where m = rho*u and e = p/(gamma-1).
     U_i = prim_to_state(rho_i, u_i0, p_i, gamma=gamma)
     U_n = prim_to_state(rho_n, u_n0, p_n, gamma=gamma)
 
@@ -400,6 +407,12 @@ def initial_condition_two_fluid_sod(x, x0=0.0, gamma=gamma,
 
 
 x_test = torch.linspace(-1.0, 1.0, 11)
+# ============================================================
+# Debug check for the initial condition
+# ============================================================
+# I use a small grid with only 11 points to check whether the
+# left/right states and the ion-neutral splitting are correct.
+# ============================================================
 U_i_test, U_n_test = initial_condition_two_fluid_sod(x_test, x0=0.0, gamma=gamma)
 
 rho_i_test, u_i_test, p_i_test = stat_one_fluid(U_i_test, gamma=gamma)
@@ -413,6 +426,9 @@ print("rho_i_test =", rho_i_test)
 print("rho_n_test =", rho_n_test)
 print("rho_tot_test =", rho_tot_test)
 print("p_tot_test =", p_tot_test)
+
+
+
 
 #Fixed BC
 
@@ -565,15 +581,12 @@ print("any inf in p_tot?",   torch.isinf(p_tot).any().item())
 
 
 x_np = x.detach().cpu().numpy()
-
 rho_i_np   = rho_i.detach().cpu().numpy()
 rho_n_np   = rho_n.detach().cpu().numpy()
 rho_tot_np = rho_tot.detach().cpu().numpy()
-
 u_i_np   = u_i.detach().cpu().numpy()
 u_n_np   = u_n.detach().cpu().numpy()
 u_tot_np = u_tot.detach().cpu().numpy()
-
 p_i_np   = p_i.detach().cpu().numpy()
 p_n_np   = p_n.detach().cpu().numpy()
 p_tot_np = p_tot.detach().cpu().numpy()
